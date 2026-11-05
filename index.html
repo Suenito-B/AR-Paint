@@ -29,11 +29,14 @@ button.on{border-bottom-width:4px}
 <script>
 const S=10, TIP=0.15, RMAX=0.018, RMIN=0.004, ER=0.04;
 const $=id=>document.getElementById(id);
+window.addEventListener('error',e=>{const m=$('msg');if(m)m.textContent='Error: '+e.message;});
+if(!window.THREE||!window.CANNON)$('msg').textContent='Could not load three.js or cannon.js. Check your connection.';
 const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);
 renderer.xr.enabled=true;renderer.xr.setReferenceSpaceType('local');document.body.appendChild(renderer.domElement);
 const scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,.01,20);
-scene.add(new THREE.HemisphereLight(0xffffff,0x555566,1),Object.assign(new THREE.DirectionalLight(0xffffff,.6),{position:new THREE.Vector3(1,2,1)}));
+const sun=new THREE.DirectionalLight(0xffffff,.6);sun.position.set(1,2,1);
+scene.add(new THREE.HemisphereLight(0xffffff,0x555566,1),sun);
 
 // physics (scaled by S so tiny pieces behave)
 const world=new CANNON.World();world.gravity.set(0,-9.8*S,0);world.allowSleep=true;world.solver.iterations=12;
