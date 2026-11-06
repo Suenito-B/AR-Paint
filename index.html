@@ -27,7 +27,7 @@ button.on{border-bottom-width:4px}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
 <script>
-const S=10, TIP=0.15, RMAX=0.018, RMIN=0.004, ER=0.04;
+const S=10, TIP=0.15, RMAX=0.045, RMIN=0.006, ER=0.04;
 const $=id=>document.getElementById(id);
 window.addEventListener('error',e=>{const m=$('msg');if(m)m.textContent='Error: '+e.message;});
 if(!window.THREE||!window.CANNON)$('msg').textContent='Could not load three.js or cannon.js. Check your connection.';
@@ -53,6 +53,14 @@ function paperTex(){const c=document.createElement('canvas');c.width=c.height=25
   return new THREE.CanvasTexture(c);}
 const paper=new THREE.Mesh(new THREE.PlaneGeometry(.5,.5).rotateX(-Math.PI/2),new THREE.MeshBasicMaterial({map:paperTex(),transparent:true,depthWrite:false}));
 paper.visible=false;scene.add(paper);
+const blocks=[],blockMat=new THREE.MeshLambertMaterial({color:0xffffff,emissive:0x333333});
+function clearBlocks(){blocks.forEach(b=>{scene.remove(b.mesh);world.removeBody(b.body);});blocks.length=0;}
+function makeBlocks(cx,cy,cz){clearBlocks();const a0=Math.random()*Math.PI*2;
+  for(let i=0;i<3;i++){const a=a0+i*2.094+(Math.random()-.5)*.7,d=.45+Math.random()*.25,h=.4+Math.random()*1.1,x=cx+Math.cos(a)*d,z=cz+Math.sin(a)*d;
+    const mesh=new THREE.Mesh(new THREE.BoxGeometry(.3,h,.3),blockMat);mesh.position.set(x,cy+h/2,z);
+    mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry),new THREE.LineBasicMaterial({color:0x888890})));scene.add(mesh);
+    const body=new CANNON.Body({mass:0,position:new CANNON.Vec3(x*S,(cy+h/2)*S,z*S)});
+    body.addShape(new CANNON.Box(new CANNON.Vec3(.15*S,h/2*S,.15*S)));world.addBody(body);blocks.push({mesh,body});}}
 const cursor=new THREE.Mesh(new THREE.SphereGeometry(1,16,12),new THREE.MeshBasicMaterial({color:0x111111,transparent:true,opacity:.8}));cursor.visible=false;scene.add(cursor);
 
 // ink materials
@@ -99,36 +107,74 @@ function build(P,R,mode,seed){
 }
 const mat=()=>style==='ribbon'?inkMat:tubeMat;
 
+// closed-loop surfaces
+const fillMat=new THREE.ShaderMaterial({transparent:true,side:THREE.DoubleSide,depthWrite:false,
+vertexShader:`attribute float aE;varying float vE;varying vec3 vP;void main(){vE=aE;vP=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+fragmentShader:`varying float vE;varying vec3 vP;void main(){float a=.12+.24*pow(vE,3.);a*=.85+.15*sin((vP.x+vP.y*.5)*160.);gl_FragColor=vec4(.09,.1,.14,a);}`});
+const closed=(a,b,per,n)=>n>=10&&per>=.3&&a.distanceTo(b)<Math.min(.1,.2*per);
+function findLoop(P){const n=P.length;let per=0;for(let i=1;i<n;i++)per+=P[i].distanceTo(P[i-1]);return closed(P[0],P[n-1],per,n)?P:null;}
+function makeFill(Q0){
+  const C=[],st=Math.ceil(Q0.length/40);for(let i=0;i<Q0.length;i+=st)C.push(Q0[i]);
+  const m=C.length;if(m<6)return null;
+  const N=new THREE.Vector3(),c0=new THREE.Vector3();
+  for(let i=0;i<m;i++){const a=C[i],b=C[(i+1)%m];N.x+=(a.y-b.y)*(a.z+b.z);N.y+=(a.z-b.z)*(a.x+b.x);N.z+=(a.x-b.x)*(a.y+b.y);c0.add(a);}
+  if(N.length()<1e-5)return null;N.normalize();c0.divideScalar(m);
+  const U=new THREE.Vector3().crossVectors(Math.abs(N.y)>.9?new THREE.Vector3(1,0,0):new THREE.Vector3(0,1,0),N).normalize(),W=new THREE.Vector3().crossVectors(N,U);
+  const Q2=C.map(p=>{const d=p.clone().sub(c0);return new THREE.Vector2(d.dot(U),d.dot(W));});
+  const ang=Q2.map(q=>Math.atan2(q.y,q.x)),dA=[];let tot=0;
+  for(let i=0;i<m;i++){let d=ang[(i+1)%m]-ang[i];if(d>Math.PI)d-=2*Math.PI;if(d<-Math.PI)d+=2*Math.PI;dA.push(d);tot+=d;}
+  const sg=Math.sign(tot),star=Math.abs(tot)>5.5&&dA.every(d=>d*sg>0);
+  const V=[],I=[],E=[];
+  if(star){const R=4;V.push(c0.clone());E.push(0);
+    for(let k=1;k<=R;k++)for(let i=0;i<m;i++){V.push(c0.clone().lerp(C[i],k/R));E.push(k/R);}
+    for(let i=0;i<m;i++)I.push(0,1+i,1+(i+1)%m);
+    for(let k=1;k<R;k++)for(let i=0;i<m;i++){const a=1+(k-1)*m+i,b=1+(k-1)*m+(i+1)%m,c=a+m,d=b+m;I.push(a,c,b,b,c,d);}
+  }else{const T=THREE.ShapeUtils.triangulateShape(Q2,[]);if(!T.length)return null;
+    C.forEach(p=>{V.push(p.clone());E.push(.7);});T.forEach(t=>I.push(t[0],t[1],t[2]));}
+  let area=0;for(let i=0;i<I.length;i+=3)area+=new THREE.Vector3().crossVectors(V[I[i+1]].clone().sub(V[I[i]]),V[I[i+2]].clone().sub(V[I[i]])).length()/2;
+  return{V,I,E,area};
+}
+function fillSamples(f){
+  const tri=[];for(let i=0;i<f.I.length;i+=3)tri.push([f.V[f.I[i]],f.V[f.I[i+1]],f.V[f.I[i+2]]]);
+  let d=.03;const mm=t=>Math.max(1,Math.ceil(Math.max(t[0].distanceTo(t[1]),t[1].distanceTo(t[2]),t[2].distanceTo(t[0]))/d));
+  for(let g=0;g<14;g++){let cnt=0;tri.forEach(t=>{const m=mm(t);cnt+=(m+1)*(m+2)/2;});if(cnt<=220)break;d*=1.25;}
+  const out=[];tri.forEach(t=>{const m=mm(t);for(let i=0;i<=m;i++)for(let j=0;j<=m-i;j++)out.push(t[0].clone().addScaledVector(t[1].clone().sub(t[0]),i/m).addScaledVector(t[2].clone().sub(t[0]),j/m));});
+  return{pts:out,r:Math.max(.015,d*.6)};
+}
+
 // pieces
 const pieces=[];
 function makePiece(P,R){
   const n=P.length,c=new THREE.Vector3();P.forEach(p=>c.add(p));c.divideScalar(n);
   let vol=0;for(let i=1;i<n;i++)vol+=Math.PI*R[i]*R[i]*P[i].distanceTo(P[i-1]);
+  const fill=(()=>{const L=findLoop(P);return L&&makeFill(L);})(),fs=fill&&fillSamples(fill);if(fill)vol+=fill.area*.006;
   const body=new CANNON.Body({mass:Math.max(.05,vol*S*S*S*3),position:new CANNON.Vec3(c.x*S,c.y*S,c.z*S),linearDamping:.05,angularDamping:.2});
   body.allowSleep=true;body.sleepSpeedLimit=.6;body.sleepTimeLimit=.5;
   const st=Math.max(1,Math.ceil(n/110));
   for(let i=0;i<n;i+=st){const p=P[i];body.addShape(new CANNON.Sphere(R[i]*S),new CANNON.Vec3((p.x-c.x)*S,(p.y-c.y)*S,(p.z-c.z)*S));}
+  if(fs)fs.pts.forEach(p=>body.addShape(new CANNON.Sphere(fs.r*S),new CANNON.Vec3((p.x-c.x)*S,(p.y-c.y)*S,(p.z-c.z)*S)));
   world.addBody(body);
   const local=P.map(p=>p.clone().sub(c)),seed=Math.random()*50;
   const mesh=new THREE.Mesh(build(local,R,style,seed),mat());mesh.frustumCulled=false;mesh.position.copy(c);scene.add(mesh);
+  if(fill){const fg=new THREE.BufferGeometry();fg.setAttribute('position',new THREE.Float32BufferAttribute(fill.V.flatMap(v=>[v.x-c.x,v.y-c.y,v.z-c.z]),3));fg.setAttribute('aE',new THREE.Float32BufferAttribute(fill.E,1));fg.setIndex(fill.I);const fm=new THREE.Mesh(fg,fillMat);fm.frustumCulled=false;fm.renderOrder=2;mesh.add(fm);}
   pieces.push({body,mesh,local,rad:R.slice(),seed});
 }
-function removePiece(p){world.removeBody(p.body);scene.remove(p.mesh);p.mesh.geometry.dispose();pieces.splice(pieces.indexOf(p),1);}
+function removePiece(p){world.removeBody(p.body);scene.remove(p.mesh);p.mesh.children.forEach(ch=>ch.geometry.dispose());p.mesh.geometry.dispose();pieces.splice(pieces.indexOf(p),1);}
 function clearAll(){while(pieces.length)removePiece(pieces[0]);}
 
 // state
 let mode='place',tool='paint',session=null,hitSource=null,last=0;
 const tip=new THREE.Vector3();let hasTip=false;
-let drawing=false,pts=[],rad=[],sm=new THREE.Vector3(),prevSm=new THREE.Vector3(),spd=0,rcur=RMAX,live=null,pointerDown=false;
+let drawing=false,pts=[],rad=[],sm=new THREE.Vector3(),prevSm=new THREE.Vector3(),spd=0,per=0,rcur=RMAX,live=null,pointerDown=false;
 const hint=$('hint');
 function setMode(m){mode=m;reticle.visible=false;
-  hint.textContent=m==='place'?'Aim at a table or floor, then tap to place the paper':(tool==='paint'?'Press and hold, then move your phone to paint':'Press and hold to erase near the brush tip');}
+  hint.textContent=m==='place'?'Aim at a table or floor, then tap to place the paper':(tool==='paint'?'Press and hold and move to paint. Close a loop to fill it':'Press and hold to erase near the brush tip');}
 function setTool(t){tool=t;$('bTool').textContent=t==='paint'?'Paint':'Erase';$('bTool').classList.toggle('on',t==='erase');setMode(mode);}
 $('bStyle').onclick=()=>{style=style==='ribbon'?'tube':'ribbon';$('bStyle').textContent=style==='ribbon'?'Ribbon':'Tube';
   pieces.forEach(p=>{p.mesh.geometry.dispose();p.mesh.geometry=build(p.local,p.rad,style,p.seed);p.mesh.material=mat();});};
 $('bTool').onclick=()=>setTool(tool==='paint'?'erase':'paint');
 $('bClear').onclick=clearAll;
-$('bMove').onclick=()=>{clearAll();paper.visible=false;setMode('place');};
+$('bMove').onclick=()=>{clearAll();clearBlocks();paper.visible=false;setMode('place');};
 $('bExit').onclick=()=>session&&session.end();
 
 const pad=$('pad');
@@ -136,9 +182,9 @@ pad.addEventListener('pointerdown',e=>{
   e.preventDefault();
   if(mode==='place'){if(!reticle.visible)return;
     const p=new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
-    ground.position.set(0,p.y*S,0);paper.position.set(p.x,p.y+.001,p.z);paper.visible=true;setMode('paint');return;}
+    ground.position.set(0,p.y*S,0);paper.position.set(p.x,p.y+.001,p.z);paper.visible=true;makeBlocks(p.x,p.y,p.z);setMode('paint');return;}
   pointerDown=true;
-  if(tool==='paint'&&hasTip){drawing=true;sm.copy(tip);prevSm.copy(sm);spd=0;rcur=RMAX;pts=[sm.clone()];rad=[RMAX];}
+  if(tool==='paint'&&hasTip){drawing=true;sm.copy(tip);prevSm.copy(sm);spd=0;rcur=RMAX;pts=[sm.clone()];rad=[RMAX];per=0;}
 });
 const up=()=>{pointerDown=false;if(drawing){drawing=false;
   if(live){scene.remove(live);live.geometry.dispose();live=null;}
@@ -159,11 +205,11 @@ renderer.setAnimationLoop((t,frame)=>{
   if(mode==='paint'&&hasTip){
     if(drawing){
       sm.lerp(tip,.35);spd+=(sm.distanceTo(prevSm)/dt-spd)*.15;prevSm.copy(sm);
-      const k=Math.min(1,Math.max(0,(spd-.03)/.47));rcur+=((RMAX+(RMIN-RMAX)*k*k*(3-2*k))-rcur)*.2;
-      if(sm.distanceTo(pts[pts.length-1])>=.008){pts.push(sm.clone());rad.push(rcur);
+      const k=Math.min(1,Math.max(0,(spd-.02)/.7));rcur+=((RMIN+(RMAX-RMIN)*Math.pow(1-k,1.5))-rcur)*.2;
+      if(sm.distanceTo(pts[pts.length-1])>=Math.max(.008,rcur*.35)){per+=sm.distanceTo(pts[pts.length-1]);pts.push(sm.clone());rad.push(rcur);
         if(pts.length>=2){const g=build(pts,rad,style,7);
           if(!live){live=new THREE.Mesh(g,mat());live.frustumCulled=false;scene.add(live);}else{live.geometry.dispose();live.geometry=g;live.material=mat();}}}
-      cursor.position.copy(sm);cursor.scale.setScalar(Math.max(.004,rcur));cursor.material.color.set(0x111111);
+      cursor.position.copy(sm);cursor.scale.setScalar(Math.max(.004,rcur));cursor.material.color.set(closed(pts[0],sm,per,pts.length)?0x2a9d6f:0x111111);
     }else{
       cursor.position.copy(tip);
       if(tool==='erase'){cursor.scale.setScalar(ER);cursor.material.color.set(0xcc3333);}else{cursor.scale.setScalar(.006);cursor.material.color.set(0x111111);}
@@ -185,7 +231,7 @@ $('go').onclick=async()=>{
   try{
     const s=await navigator.xr.requestSession('immersive-ar',{requiredFeatures:['hit-test'],optionalFeatures:['dom-overlay'],domOverlay:{root:$('ui')}});
     session=s;s.addEventListener('end',onEnd);await renderer.xr.setSession(s);
-    $('splash').style.display='none';$('hud').style.display='block';clearAll();paper.visible=false;setMode('place');
+    $('splash').style.display='none';$('hud').style.display='block';clearAll();clearBlocks();paper.visible=false;setMode('place');
     const vs=await s.requestReferenceSpace('viewer');hitSource=await s.requestHitTestSource({space:vs});
   }catch(e){$('msg').textContent='Could not start AR: '+e.message;}
 };
