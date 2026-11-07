@@ -10,19 +10,23 @@ html,body{margin:0;height:100%;overflow:hidden;background:#f6f4ee;font-family:Ge
 #splash p{max-width:320px;margin:0;line-height:1.5;color:#444}
 button{font:inherit;color:#111;background:rgba(250,248,242,.88);border:1px solid #222;border-radius:3px;padding:9px 13px;pointer-events:auto}
 button.on{border-bottom-width:4px}
-#go{font-size:18px;padding:12px 28px}
+.go{font-size:18px;padding:12px 28px}
 #hud{position:absolute;inset:0;display:none}
 #pad{position:absolute;inset:0;touch-action:none}
 #bar{position:absolute;top:calc(env(safe-area-inset-top,0px) + 10px);left:0;right:0;display:flex;gap:7px;justify-content:center;flex-wrap:wrap;pointer-events:none}
 #hint{position:absolute;bottom:calc(env(safe-area-inset-bottom,0px) + 22px);left:0;right:0;text-align:center;font-size:15px;color:#fff;text-shadow:0 0 4px #000,0 0 8px #000;pointer-events:none}
+#dot{position:absolute;left:50%;top:50%;width:8px;height:8px;margin:-4px 0 0 -4px;border-radius:50%;background:#fff;border:1px solid #000;pointer-events:none}
+#dot.sel{width:16px;height:16px;margin:-8px 0 0 -8px;background:#ffd23a}
+#selUI,#startUI{position:absolute;bottom:calc(env(safe-area-inset-bottom,0px) + 70px);left:0;right:0;display:none;justify-content:center;gap:10px}
+#modes{display:flex;flex-direction:column;gap:12px}
 </style></head><body>
 <div id="ui">
   <div id="splash"><h1>墨 Ink Paint</h1>
     <p>Paint in the air with your phone. Strokes turn into solid pieces that fall and stack. Move slowly for thick ink, quickly for thin.</p>
-    <button id="go">Start AR</button><p id="msg"></p></div>
+    <div id="modes"><button id="goObs" class="go">Obstacle Course</button><button id="goRoom" class="go">Room Course</button></div><p id="msg"></p></div>
   <div id="hud"><div id="pad"></div>
-    <div id="bar"><button id="bStyle">Ribbon</button><button id="bTool">Paint</button><button id="bClear">Clear</button><button id="bMove">Move</button><button id="bExit">✕</button></div>
-    <div id="hint"></div></div>
+    <div id="bar"><button id="bStyle">Ribbon</button><button id="bTool">Paint</button><button id="bClear">Clear</button><button id="bMove">Move</button><button id="bPlanes">Planes: On</button><button id="bPlay">Play</button><button id="bCubes">Cubes: On</button><button id="bScale">Scale 1×</button><button id="bExit">✕</button></div>
+    <div id="dot"></div><div id="selUI"><button id="bRel">Release</button><button id="bDisc">Discard</button></div><div id="startUI"><button id="bDn">Height −</button><button id="bUp">Height +</button><button id="bOk">Confirm start</button></div><div id="hint"></div></div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
@@ -54,14 +58,87 @@ function paperTex(){const c=document.createElement('canvas');c.width=c.height=25
 const paper=new THREE.Mesh(new THREE.PlaneGeometry(.5,.5).rotateX(-Math.PI/2),new THREE.MeshBasicMaterial({map:paperTex(),transparent:true,depthWrite:false}));
 paper.visible=false;scene.add(paper);
 const blocks=[],blockMat=new THREE.MeshLambertMaterial({color:0xffffff,emissive:0x333333});
+let cubesOn=true,SC=1,gameMode='obs';
 function clearBlocks(){blocks.forEach(b=>{scene.remove(b.mesh);world.removeBody(b.body);});blocks.length=0;}
-function makeBlocks(cx,cy,cz){clearBlocks();const a0=Math.random()*Math.PI*2;
-  for(let i=0;i<3;i++){const a=a0+i*2.094+(Math.random()-.5)*.7,d=.45+Math.random()*.25,h=.4+Math.random()*1.1,x=cx+Math.cos(a)*d,z=cz+Math.sin(a)*d;
-    const mesh=new THREE.Mesh(new THREE.BoxGeometry(.3,h,.3),blockMat);mesh.position.set(x,cy+h/2,z);
+function makeBlocks(cx,cy,cz){clearBlocks();const a0=Math.random()*Math.PI*2;let top=0;
+  const add=(w,h,dp,x,y,z,q)=>{const mesh=new THREE.Mesh(new THREE.BoxGeometry(w,h,dp),blockMat);mesh.position.set(x,y,z);if(q)mesh.quaternion.copy(q);mesh.visible=cubesOn;
     mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry),new THREE.LineBasicMaterial({color:0x888890})));scene.add(mesh);
-    const body=new CANNON.Body({mass:0,position:new CANNON.Vec3(x*S,(cy+h/2)*S,z*S)});
-    body.addShape(new CANNON.Box(new CANNON.Vec3(.15*S,h/2*S,.15*S)));world.addBody(body);blocks.push({mesh,body});}}
+    const body=new CANNON.Body({mass:0,position:new CANNON.Vec3(x*S,y*S,z*S)});if(q)body.quaternion.set(q.x,q.y,q.z,q.w);body.collisionResponse=cubesOn;
+    body.addShape(new CANNON.Box(new CANNON.Vec3(w/2*S,h/2*S,dp/2*S)));world.addBody(body);blocks.push({mesh,body});top=Math.max(top,y+Math.max(w,h)/2-cy);};
+  for(let i=0;i<3;i++){const a=a0+i*2.094+(Math.random()-.5)*.7,d=(.45+Math.random()*.25)*SC,h=(.4+Math.random()*1.1)*SC;add(.3*SC,h,.3*SC,cx+Math.cos(a)*d,cy+h/2,cz+Math.sin(a)*d);}
+  for(let i=0;i<2;i++){const a=a0+1+i*3.1,d=.3*SC,q=new THREE.Quaternion().setFromEuler(new THREE.Euler(0,Math.random()*Math.PI,(Math.random()-.5)*.8));
+    add(.6*SC,.04*SC,.3*SC,cx+Math.cos(a)*d,cy+(.4+Math.random()*.5)*SC,cz+Math.sin(a)*d,q);}
+  return{top,gx:cx+Math.cos(a0+1.047)*.7*SC,gz:cz+Math.sin(a0+1.047)*.7*SC};}
+
+// ---- plane detection: live overlays + static colliders ----
+const planeVis=new Map(),planeCol=new Map();
+let showPlanes=true,planeCount=0,lowestY=Infinity,planesSeen=false;
+const matH=new THREE.MeshBasicMaterial({color:0x2a9d6f,transparent:true,opacity:.28,side:THREE.DoubleSide,depthWrite:false});
+const matV=new THREE.MeshBasicMaterial({color:0x3a6fd8,transparent:true,opacity:.2,side:THREE.DoubleSide,depthWrite:false});
+function planeGeo(poly){const n=poly.length,pos=new Float32Array((n+1)*3),idx=[];let cx=0,cz=0;
+  poly.forEach((q,i)=>{pos[i*3]=q.x;pos[i*3+2]=q.z;cx+=q.x;cz+=q.z;});
+  pos[n*3]=cx/n;pos[n*3+2]=cz/n;
+  for(let i=0;i<n;i++)idx.push(n,i,(i+1)%n);
+  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(pos,3));g.setIndex(idx);return g;}
+function addPlaneBody(pl,pose){const poly=pl.polygon;if(poly.length<3)return;
+  let x0=1e9,x1=-1e9,z0=1e9,z1=-1e9;
+  poly.forEach(q=>{x0=Math.min(x0,q.x);x1=Math.max(x1,q.x);z0=Math.min(z0,q.z);z1=Math.max(z1,q.z);});
+  const hw=Math.max(.05,(x1-x0)/2),hd=Math.max(.05,(z1-z0)/2),H=.03,tr=pose.transform,o=tr.orientation;
+  const q=new THREE.Quaternion(o.x,o.y,o.z,o.w),lo=new THREE.Vector3((x0+x1)/2,-H,(z0+z1)/2).applyQuaternion(q);
+  const b=new CANNON.Body({mass:0,position:new CANNON.Vec3((tr.position.x+lo.x)*S,(tr.position.y+lo.y)*S,(tr.position.z+lo.z)*S)});
+  b.quaternion.set(o.x,o.y,o.z,o.w);
+  b.addShape(new CANNON.Box(new CANNON.Vec3(hw*S,H*S,hd*S)));world.addBody(b);planeCol.set(pl,b);}
+function updatePlanes(rs,frame){
+  const set=frame.detectedPlanes;if(!set)return;planesSeen=true;
+  planeVis.forEach((v,pl)=>{if(!set.has(pl)){scene.remove(v.mesh);v.mesh.geometry.dispose();planeVis.delete(pl);}});
+  let n=0,low=Infinity;
+  set.forEach(pl=>{const pose=frame.getPose(pl.planeSpace,rs);if(!pose)return;n++;
+    if(pl.orientation==='horizontal')low=Math.min(low,pose.transform.position.y);
+    let v=planeVis.get(pl);
+    if(!v){v={mesh:new THREE.Mesh(planeGeo(pl.polygon),pl.orientation==='vertical'?matV:matH),t:pl.lastChangedTime};
+      v.mesh.matrixAutoUpdate=false;v.mesh.frustumCulled=false;v.mesh.renderOrder=1;scene.add(v.mesh);planeVis.set(pl,v);}
+    else if(v.t!==pl.lastChangedTime){v.mesh.geometry.dispose();v.mesh.geometry=planeGeo(pl.polygon);v.t=pl.lastChangedTime;}
+    v.mesh.matrix.fromArray(pose.transform.matrix);v.mesh.matrixWorldNeedsUpdate=true;v.mesh.visible=showPlanes;
+    // once the play area is locked, freeze each new plane as a collider (never moved, so no jitter)
+    if(gameMode==='room'&&mode==='paint'&&!planeCol.has(pl))addPlaneBody(pl,pose);});
+  planeCount=n;lowestY=low;
+  if(mode==='place')hint.textContent=n?`${n} surface${n>1?'s':''} found. Aim at a table or floor and tap to place the paper`:'Move your phone slowly to scan surfaces...';}
+function clearPlaneBodies(){planeCol.forEach(b=>world.removeBody(b));planeCol.clear();}
+function clearPlaneVis(){planeVis.forEach(v=>{scene.remove(v.mesh);v.mesh.geometry.dispose();});planeVis.clear();}
 const cursor=new THREE.Mesh(new THREE.SphereGeometry(1,16,12),new THREE.MeshBasicMaterial({color:0x111111,transparent:true,opacity:.8}));cursor.visible=false;scene.add(cursor);
+
+
+// ---- ghosts, anchors, ball, goal ----
+const ghosts=[],ghostMat=new THREE.MeshBasicMaterial({color:0x35c4ff,transparent:true,opacity:.55,side:THREE.DoubleSide}),selMat=new THREE.MeshBasicMaterial({color:0xffd23a,transparent:true,opacity:.8,side:THREE.DoubleSide});
+const rayO=new THREE.Vector3(),rayD=new THREE.Vector3(),tmpW=new THREE.Vector3();let sel=null;
+function addGhost(P,R){const mesh=new THREE.Mesh(build(P,R,'tube',1),ghostMat);mesh.frustumCulled=false;scene.add(mesh);ghosts.push({P,R,mesh});}
+function rmGhost(g){scene.remove(g.mesh);g.mesh.geometry.dispose();ghosts.splice(ghosts.indexOf(g),1);if(sel===g){sel=null;$('selUI').style.display='none';$('dot').classList.remove('sel');}}
+function clearGhosts(){while(ghosts.length)rmGhost(ghosts[0]);}
+function pickGhost(){let best=null,bt=1e9;for(const g of ghosts)for(let i=0;i<g.P.length;i+=2){const v=tmpW.subVectors(g.P[i],rayO),t=v.dot(rayD);if(t<.05)continue;
+  if(v.addScaledVector(rayD,-t).length()<g.R[i]+.03&&t<bt){bt=t;best=g;}}return best;}
+const anchors=[],ANCH_R=.1;
+function addAnchor(pos){const mesh=new THREE.Mesh(new THREE.SphereGeometry(.02,16,12),new THREE.MeshBasicMaterial({color:0xffa31a}));mesh.position.copy(pos);scene.add(mesh);
+  const body=new CANNON.Body({mass:0,position:new CANNON.Vec3(pos.x*S,pos.y*S,pos.z*S)});body.addShape(new CANNON.Sphere(.02*S));body.collisionResponse=false;world.addBody(body);anchors.push({mesh,body,pos:pos.clone()});}
+function clearAnchors(){anchors.forEach(a=>{scene.remove(a.mesh);world.removeBody(a.body);});anchors.length=0;}
+function latch(p,P){const b=p.body;p.cons=[];[P[0],P[P.length-1]].forEach(e=>{for(const a of anchors){if(a.pos.distanceTo(e)<ANCH_R){
+  const c=new CANNON.PointToPointConstraint(b,new CANNON.Vec3(a.pos.x*S-b.position.x,a.pos.y*S-b.position.y,a.pos.z*S-b.position.z),a.body,new CANNON.Vec3(0,0,0));
+  world.addConstraint(c);p.cons.push(c);b.allowSleep=false;b.wakeUp();break;}}});}
+function releaseGhost(g){const P=g.P,R=g.R;rmGhost(g);makePiece(P,R);latch(pieces[pieces.length-1],P);}
+let ball=null,goal=null,goalR=.12,ballR=.04,state='idle';const ballStart=new THREE.Vector3();
+function clearBall(){if(ball){scene.remove(ball.mesh);world.removeBody(ball.body);ball=null;}state='idle';$('bPlay').textContent='Play';}
+function makeBall(p){clearBall();ballR=.04*SC;ballStart.copy(p);
+  const mesh=new THREE.Mesh(new THREE.SphereGeometry(ballR,20,14),new THREE.MeshLambertMaterial({color:0xe5483a,emissive:0x330a06,transparent:true,opacity:.85}));scene.add(mesh);
+  const body=new CANNON.Body({mass:0,position:new CANNON.Vec3(p.x*S,p.y*S,p.z*S),linearDamping:.02});body.addShape(new CANNON.Sphere(ballR*S));
+  body.addEventListener('collide',e=>{if(state==='play'&&e.body===ground){if(nearGoal())endRun(true);else if(gameMode==='obs')endRun(false);}});
+  world.addBody(body);ball={mesh,body};}
+function moveBall(p){ballStart.copy(p);ball.body.position.set(p.x*S,p.y*S,p.z*S);}
+function clearGoal(){if(goal){scene.remove(goal);goal=null;}}
+function makeGoal(x,y,z){clearGoal();goalR=.12*SC;goal=new THREE.Group();
+  goal.add(new THREE.Mesh(new THREE.RingGeometry(goalR*.8,goalR,40).rotateX(-Math.PI/2),new THREE.MeshBasicMaterial({color:0x3dffb0,side:THREE.DoubleSide})),
+    new THREE.Mesh(new THREE.CircleGeometry(goalR*.8,40).rotateX(-Math.PI/2),new THREE.MeshBasicMaterial({color:0x3dffb0,transparent:true,opacity:.25,depthWrite:false})));
+  goal.position.set(x,y+.003,z);scene.add(goal);}
+function nearGoal(){if(!goal||!ball)return false;const b=ball.body.position;return Math.hypot(b.x/S-goal.position.x,b.z/S-goal.position.z)<goalR&&Math.abs(b.y/S-goal.position.y)<.3*SC;}
+function endRun(w){if(state!=='play')return;state='done';hint.textContent=w?'Goal reached! Press Reset':'The ball hit the ground. Press Reset';}
 
 // ink materials
 const inkMat=new THREE.ShaderMaterial({transparent:true,side:THREE.DoubleSide,
@@ -159,22 +236,33 @@ function makePiece(P,R){
   if(fill){const fg=new THREE.BufferGeometry();fg.setAttribute('position',new THREE.Float32BufferAttribute(fill.V.flatMap(v=>[v.x-c.x,v.y-c.y,v.z-c.z]),3));fg.setAttribute('aE',new THREE.Float32BufferAttribute(fill.E,1));fg.setIndex(fill.I);const fm=new THREE.Mesh(fg,fillMat);fm.frustumCulled=false;fm.renderOrder=2;mesh.add(fm);}
   pieces.push({body,mesh,local,rad:R.slice(),seed});
 }
-function removePiece(p){world.removeBody(p.body);scene.remove(p.mesh);p.mesh.children.forEach(ch=>ch.geometry.dispose());p.mesh.geometry.dispose();pieces.splice(pieces.indexOf(p),1);}
+function removePiece(p){(p.cons||[]).forEach(c=>world.removeConstraint(c));world.removeBody(p.body);scene.remove(p.mesh);p.mesh.children.forEach(ch=>ch.geometry.dispose());p.mesh.geometry.dispose();pieces.splice(pieces.indexOf(p),1);}
 function clearAll(){while(pieces.length)removePiece(pieces[0]);}
 
 // state
-let mode='place',tool='paint',session=null,hitSource=null,last=0;
+let startP=null,sH=.15,mode='place',tool='paint',session=null,hitSource=null,last=0;
 const tip=new THREE.Vector3();let hasTip=false;
 let drawing=false,pts=[],rad=[],sm=new THREE.Vector3(),prevSm=new THREE.Vector3(),spd=0,per=0,rcur=RMAX,live=null,pointerDown=false;
 const hint=$('hint');
-function setMode(m){mode=m;reticle.visible=false;
-  hint.textContent=m==='place'?'Aim at a table or floor, then tap to place the paper':(tool==='paint'?'Press and hold and move to paint. Close a loop to fill it':'Press and hold to erase near the brush tip');}
-function setTool(t){tool=t;$('bTool').textContent=t==='paint'?'Paint':'Erase';$('bTool').classList.toggle('on',t==='erase');setMode(mode);}
+const HT={place:'Aim at a table or floor, then tap to place the level',start:'Scan the room. Aim at a surface and tap to set the ball start',goal:'Tap a surface to place the goal (max 5 m from start)'};
+function setMode(m){mode=m;reticle.visible=false;$('startUI').style.display='none';
+  hint.textContent=HT[m]||(tool==='paint'?'Hold and move to paint. A ghost stays; aim the dot at it to release':tool==='anchor'?'Tap to drop an anchor. Strokes ending near one will swing from it':'Hold to erase near the brush tip');}
+function setTool(t){tool=t;$('bTool').textContent={paint:'Paint',anchor:'Anchor',erase:'Erase'}[t];$('bTool').classList.toggle('on',t!=='paint');setMode(mode);}
 $('bStyle').onclick=()=>{style=style==='ribbon'?'tube':'ribbon';$('bStyle').textContent=style==='ribbon'?'Ribbon':'Tube';
   pieces.forEach(p=>{p.mesh.geometry.dispose();p.mesh.geometry=build(p.local,p.rad,style,p.seed);p.mesh.material=mat();});};
-$('bTool').onclick=()=>setTool(tool==='paint'?'erase':'paint');
-$('bClear').onclick=clearAll;
-$('bMove').onclick=()=>{clearAll();clearBlocks();paper.visible=false;setMode('place');};
+$('bTool').onclick=()=>setTool(tool==='paint'?'anchor':tool==='anchor'?'erase':'paint');
+$('bClear').onclick=()=>{clearAll();clearGhosts();clearAnchors();};
+function resetLevel(){clearPlaneBodies();clearAll();clearGhosts();clearAnchors();clearBlocks();clearBall();clearGoal();paper.visible=false;setMode(gameMode==='room'?'start':'place');}
+$('bMove').onclick=resetLevel;
+$('bRel').onclick=()=>sel&&releaseGhost(sel);$('bDisc').onclick=()=>sel&&rmGhost(sel);
+$('bCubes').onclick=()=>{cubesOn=!cubesOn;blocks.forEach(b=>{b.mesh.visible=cubesOn;b.body.collisionResponse=cubesOn;});$('bCubes').textContent='Cubes: '+(cubesOn?'On':'Off');};
+$('bScale').onclick=()=>{const L=[.5,1,2,3];SC=L[(L.indexOf(SC)+1)%4];$('bScale').textContent='Scale '+SC+'×';hint.textContent='Scale applies next time you place the level (Move)';};
+$('bPlay').onclick=()=>{if(!ball)return;if(state==='idle'){state='play';const b=ball.body;b.type=CANNON.Body.DYNAMIC;b.mass=1;b.updateMassProperties();b.allowSleep=false;b.wakeUp();$('bPlay').textContent='Reset';}
+  else{state='idle';const b=ball.body;b.type=CANNON.Body.STATIC;b.mass=0;b.updateMassProperties();b.velocity.set(0,0,0);b.angularVelocity.set(0,0,0);b.quaternion.set(0,0,0,1);moveBall(ballStart);$('bPlay').textContent='Play';setMode('paint');}};
+$('bUp').onclick=()=>{if(ball&&startP){sH+=.05;moveBall(new THREE.Vector3(startP.x,startP.y+ballR+sH,startP.z));}};
+$('bDn').onclick=()=>{if(ball&&startP){sH=Math.max(0,sH-.05);moveBall(new THREE.Vector3(startP.x,startP.y+ballR+sH,startP.z));}};
+$('bOk').onclick=()=>{if(ball&&startP)setMode('goal');};
+$('bPlanes').onclick=()=>{showPlanes=!showPlanes;$('bPlanes').textContent='Planes: '+(showPlanes?'On':'Off');};
 $('bExit').onclick=()=>session&&session.end();
 
 const pad=$('pad');
@@ -182,13 +270,18 @@ pad.addEventListener('pointerdown',e=>{
   e.preventDefault();
   if(mode==='place'){if(!reticle.visible)return;
     const p=new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
-    ground.position.set(0,p.y*S,0);paper.position.set(p.x,p.y+.001,p.z);paper.visible=true;makeBlocks(p.x,p.y,p.z);setMode('paint');return;}
+    const gy=(lowestY<p.y-.15)?lowestY:p.y;ground.position.set(0,gy*S,0);paper.position.set(p.x,p.y+.001,p.z);paper.visible=true;paper.scale.setScalar(SC);const L=makeBlocks(p.x,p.y,p.z);makeBall(new THREE.Vector3(p.x,p.y+L.top+.25*SC,p.z));makeGoal(L.gx,p.y,L.gz);setMode('paint');return;}
+  if(mode==='start'||mode==='goal'){if(!reticle.visible)return;const p=new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
+    if(mode==='start'){startP=p;sH=.15;ground.position.set(0,((lowestY<p.y-.15)?lowestY:p.y)*S,0);makeBall(new THREE.Vector3(p.x,p.y+.04+sH,p.z));$('startUI').style.display='flex';return;}
+    if(p.distanceTo(startP)>5){hint.textContent='Too far. The goal must be within 5 m of the start';return;}
+    makeGoal(p.x,p.y,p.z);setMode('paint');return;}
   pointerDown=true;
+  if(tool==='anchor'){if(hasTip)addAnchor(tip);return;}
   if(tool==='paint'&&hasTip){drawing=true;sm.copy(tip);prevSm.copy(sm);spd=0;rcur=RMAX;pts=[sm.clone()];rad=[RMAX];per=0;}
 });
 const up=()=>{pointerDown=false;if(drawing){drawing=false;
   if(live){scene.remove(live);live.geometry.dispose();live=null;}
-  if(pts.length>=3)makePiece(pts,rad);pts=[];rad=[];}};
+  if(pts.length>=3)addGhost(pts,rad);pts=[];rad=[];}};
 pad.addEventListener('pointerup',up);pad.addEventListener('pointercancel',up);
 
 const tmpQ=new THREE.Quaternion(),tmpV=new THREE.Vector3(),cv=new CANNON.Vec3(),tp=new CANNON.Vec3();
@@ -198,11 +291,14 @@ renderer.setAnimationLoop((t,frame)=>{
     const rs=renderer.xr.getReferenceSpace(),pose=frame.getViewerPose(rs);
     if(pose){const tr=pose.transform,o=tr.orientation;
       tmpQ.set(o.x,o.y,o.z,o.w);tmpV.set(0,0,-1).applyQuaternion(tmpQ);
-      tip.set(tr.position.x,tr.position.y,tr.position.z).addScaledVector(tmpV,TIP);hasTip=true;}
-    if(mode==='place'&&hitSource){const h=frame.getHitTestResults(hitSource);
+      tip.set(tr.position.x,tr.position.y,tr.position.z).addScaledVector(tmpV,TIP);rayO.set(tr.position.x,tr.position.y,tr.position.z);rayD.copy(tmpV);hasTip=true;}
+    updatePlanes(rs,frame);
+    if((mode==='place'||mode==='start'||mode==='goal')&&hitSource){const h=frame.getHitTestResults(hitSource);
       if(h.length){reticle.visible=true;reticle.matrix.fromArray(h[0].getPose(rs).transform.matrix);}else reticle.visible=false;}
   }
   if(mode==='paint'&&hasTip){
+    if(!drawing){const ns=pickGhost();if(ns!==sel){if(sel)sel.mesh.material=ghostMat;sel=ns;if(sel)sel.mesh.material=selMat;$('selUI').style.display=sel?'flex':'none';$('dot').classList.toggle('sel',!!sel);}}
+    if(state==='play'&&nearGoal())endRun(true);
     if(drawing){
       sm.lerp(tip,.35);spd+=(sm.distanceTo(prevSm)/dt-spd)*.15;prevSm.copy(sm);
       const k=Math.min(1,Math.max(0,(spd-.02)/.7));rcur+=((RMIN+(RMAX-RMIN)*Math.pow(1-k,1.5))-rcur)*.2;
@@ -222,19 +318,24 @@ renderer.setAnimationLoop((t,frame)=>{
     world.step(1/180,dt,6);
   }else cursor.visible=false;
   for(const p of pieces){const b=p.body;p.mesh.position.set(b.position.x/S,b.position.y/S,b.position.z/S);p.mesh.quaternion.set(b.quaternion.x,b.quaternion.y,b.quaternion.z,b.quaternion.w);}
+  if(ball)ball.mesh.position.set(ball.body.position.x/S,ball.body.position.y/S,ball.body.position.z/S);
+  if(goal)goal.scale.setScalar(1+.06*Math.sin(t/300));
   renderer.render(scene,camera);
 });
 
 // session
-function onEnd(){session=null;hitSource=null;hasTip=false;$('hud').style.display='none';$('splash').style.display='flex';}
-$('go').onclick=async()=>{
+function onEnd(){clearAll();clearGhosts();clearAnchors();clearBlocks();clearBall();clearGoal();clearPlaneBodies();clearPlaneVis();lowestY=Infinity;planesSeen=false;session=null;hitSource=null;hasTip=false;$('hud').style.display='none';$('splash').style.display='flex';}
+async function startAR(m){gameMode=m;if(m==='room')SC=1;
   try{
-    const s=await navigator.xr.requestSession('immersive-ar',{requiredFeatures:['hit-test'],optionalFeatures:['dom-overlay'],domOverlay:{root:$('ui')}});
+    const s=await navigator.xr.requestSession('immersive-ar',{requiredFeatures:['hit-test'],optionalFeatures:m==='room'?['dom-overlay','plane-detection']:['dom-overlay'],domOverlay:{root:$('ui')}});
     session=s;s.addEventListener('end',onEnd);await renderer.xr.setSession(s);
-    $('splash').style.display='none';$('hud').style.display='block';clearAll();clearBlocks();paper.visible=false;setMode('place');
+    $('splash').style.display='none';$('hud').style.display='block';resetLevel();
+    $('bPlanes').style.display=m==='room'?'':'none';$('bCubes').style.display=$('bScale').style.display=m==='obs'?'':'none';$('bScale').textContent='Scale '+SC+'×';
     const vs=await s.requestReferenceSpace('viewer');hitSource=await s.requestHitTestSource({space:vs});
+    if(m==='room')setTimeout(()=>{if(session&&!planesSeen){$('bPlanes').style.display='none';hint.textContent='Plane detection unavailable, using hit-test only. '+hint.textContent;}},1500);
   }catch(e){$('msg').textContent='Could not start AR: '+e.message;}
-};
+}
+$('goObs').onclick=()=>startAR('obs');$('goRoom').onclick=()=>startAR('room');
 if(!navigator.xr)$('msg').textContent='WebXR is not available. Use Chrome on an ARCore Android phone over HTTPS.';
 else navigator.xr.isSessionSupported('immersive-ar').then(ok=>{if(!ok)$('msg').textContent='AR is not supported on this device or browser.';});
 addEventListener('resize',()=>{renderer.setSize(innerWidth,innerHeight);});
