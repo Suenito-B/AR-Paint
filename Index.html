@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ink Paint AR</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#f6f4ee;font-family:Georgia,"Songti SC",serif;color:#111}
+#ui{position:fixed;inset:0;touch-action:none;-webkit-user-select:none;user-select:none}
+#splash{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:#f6f4ee;text-align:center;padding:24px}
+#splash h1{font-weight:400;font-size:34px;margin:0;letter-spacing:.08em}
+#splash p{max-width:320px;margin:0;line-height:1.5;color:#444}
+button{font:inherit;color:#111;background:rgba(250,248,242,.88);border:1px solid #222;border-radius:3px;padding:9px 13px;pointer-events:auto}
+button.on{border-bottom-width:4px}
+#go{font-size:18px;padding:12px 28px}
+#hud{position:absolute;inset:0;display:none}
+#pad{position:absolute;inset:0;touch-action:none}
+#bar{position:absolute;top:calc(env(safe-area-inset-top,0px) + 10px);left:0;right:0;display:flex;gap:7px;justify-content:center;flex-wrap:wrap;pointer-events:none}
+#hint{position:absolute;bottom:calc(env(safe-area-inset-bottom,0px) + 22px);left:0;right:0;text-align:center;font-size:15px;color:#fff;text-shadow:0 0 4px #000,0 0 8px #000;pointer-events:none}
+</style></head><body>
+<div id="ui">
+  <div id="splash"><h1>墨 Ink Paint</h1>
+    <p>Paint in the air with your phone. Strokes turn into solid pieces that fall and stack. Move slowly for thick ink, quickly for thin.</p>
+    <button id="go">Start AR</button><p id="msg"></p></div>
+  <div id="hud"><div id="pad"></div>
+    <div id="bar"><button id="bStyle">Ribbon</button><button id="bTool">Paint</button><button id="bClear">Clear</button><button id="bMove">Move</button><button id="bPlanes">Planes: On</button><button id="bExit">✕</button></div>
+    <div id="hint"></div></div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
+<script>
+const S=10, TIP=0.15, RMAX=0.045, RMIN=0.006, ER=0.04;
+const $=id=>document.getElementById(id);
+window.addEventListener('error',e=>{const m=$('msg');if(m)m.textContent='Error: '+e.message;});
+if(!window.THREE||!window.CANNON)$('msg').textContent='Could not load three.js or cannon.js. Check your connection.';
+const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);
+renderer.xr.enabled=true;renderer.xr.setReferenceSpaceType('local');document.body.appendChild(renderer.domElement);
+const scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,.01,20);
+const sun=new THREE.DirectionalLight(0xffffff,.6);sun.position.set(1,2,1);
+scene.add(new THREE.HemisphereLight(0xffffff,0x555566,1),sun);
+
+// physics (scaled by S so tiny pieces behave)
+const world=new CANNON.World();world.gravity.set(0,-9.8*S,0);world.allowSleep=true;world.solver.iterations=12;
+world.defaultContactMaterial.friction=.5;world.defaultContactMaterial.restitution=.1;
+const ground=new CANNON.Body({mass:0});ground.addShape(new CANNON.Plane());ground.quaternion.setFromAxisAngle(new CANNON.Vec3(1,0,0),-Math.PI/2);world.addBody(ground);
+
+// reference surface
+const reticle=new THREE.Mesh(new THREE.RingGeometry(.06,.08,32).rotateX(-Math.PI/2),new THREE.MeshBasicMaterial({color:0xffffff}));
+reticle.matrixAutoUpdate=false;reticle.visible=false;scene.add(reticle);
+function paperTex(){const c=document.createElement('canvas');c.width=c.height=256;const g=c.getContext('2d');
+  const gr=g.createRadialGradient(128,128,10,128,128,126);gr.addColorStop(0,'rgba(255,255,255,.6)');gr.addColorStop(.7,'rgba(255,255,255,.4)');gr.addColorStop(1,'rgba(255,255,255,0)');
+  g.fillStyle=gr;g.fillRect(0,0,256,256);g.strokeStyle='rgba(60,60,70,.13)';
+  for(let i=0;i<40;i++){g.lineWidth=1+Math.random()*2;const y=40+Math.random()*176,x=30+Math.random()*90;g.beginPath();g.moveTo(x,y);g.lineTo(x+40+Math.random()*100,y+(Math.random()-.5)*3);g.stroke();}
+  return new THREE.CanvasTexture(c);}
+const paper=new THREE.Mesh(new THREE.PlaneGeometry(.5,.5).rotateX(-Math.PI/2),new THREE.MeshBasicMaterial({map:paperTex(),transparent:true,depthWrite:false}));
+paper.visible=false;scene.add(paper);
+const blocks=[],blockMat=new THREE.MeshLambertMaterial({color:0xffffff,emissive:0x333333});
+function clearBlocks(){blocks.forEach(b=>{scene.remove(b.mesh);world.removeBody(b.body);});blocks.length=0;}
+function makeBlocks(cx,cy,cz){clearBlocks();const a0=Math.random()*Math.PI*2;
+  for(let i=0;i<3;i++){const a=a0+i*2.094+(Math.random()-.5)*.7,d=.45+Math.random()*.25,h=.4+Math.random()*1.1,x=cx+Math.cos(a)*d,z=cz+Math.sin(a)*d;
+    const mesh=new THREE.Mesh(new THREE.BoxGeometry(.3,h,.3),blockMat);mesh.position.set(x,cy+h/2,z);
+    mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry),new THREE.LineBasicMaterial({color:0x888890})));scene.add(mesh);
+    const body=new CANNON.Body({mass:0,position:new CANNON.Vec3(x*S,(cy+h/2)*S,z*S)});
+    body.addShape(new CANNON.Box(new CANNON.Vec3(.15*S,h/2*S,.15*S)));world.addBody(body);blocks.push({mesh,body});}}
+
+// ---- plane detection: live overlays + static colliders ----
+const planeVis=new Map(),planeCol=new Map();
+let showPlanes=true,planeCount=0,lowestY=Infinity,planesSeen=false;
+const matH=new THREE.MeshBasicMaterial({color:0x2a9d6f,transparent:true,opacity:.28,side:THREE.DoubleSide,depthWrite:false});
+const matV=new THREE.MeshBasicMaterial({color:0x3a6fd8,transparent:true,opacity:.2,side:THREE.DoubleSide,depthWrite:false});
+function planeGeo(poly){const n=poly.length,pos=new Float32Array((n+1)*3),idx=[];let cx=0,cz=0;
+  poly.forEach((q,i)=>{pos[i*3]=q.x;pos[i*3+2]=q.z;cx+=q.x;cz+=q.z;});
+  pos[n*3]=cx/n;pos[n*3+2]=cz/n;
+  for(let i=0;i<n;i++)idx.push(n,i,(i+1)%n);
+  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(pos,3));g.setIndex(idx);return g;}
+function addPlaneBody(pl,pose){const poly=pl.polygon;if(poly.length<3)return;
+  let x0=1e9,x1=-1e9,z0=1e9,z1=-1e9;
+  poly.forEach(q=>{x0=Math.min(x0,q.x);x1=Math.max(x1,q.x);z0=Math.min(z0,q.z);z1=Math.max(z1,q.z);});
+  const hw=Math.max(.05,(x1-x0)/2),hd=Math.max(.05,(z1-z0)/2),H=.03,tr=pose.transform,o=tr.orientation;
+  const q=new THREE.Quaternion(o.x,o.y,o.z,o.w),lo=new THREE.Vector3((x0+x1)/2,-H,(z0+z1)/2).applyQuaternion(q);
+  const b=new CANNON.Body({mass:0,position:new CANNON.Vec3((tr.position.x+lo.x)*S,(tr.position.y+lo.y)*S,(tr.position.z+lo.z)*S)});
+  b.quaternion.set(o.x,o.y,o.z,o.w);
+  b.addShape(new CANNON.Box(new CANNON.Vec3(hw*S,H*S,hd*S)));world.addBody(b);planeCol.set(pl,b);}
+function updatePlanes(rs,frame){
+  const set=frame.detectedPlanes;if(!set)return;planesSeen=true;
+  planeVis.forEach((v,pl)=>{if(!set.has(pl)){scene.remove(v.mesh);v.mesh.geometry.dispose();planeVis.delete(pl);}});
+  let n=0,low=Infinity;
+  set.forEach(pl=>{const pose=frame.getPose(pl.planeSpace,rs);if(!pose)return;n++;
+    if(pl.orientation==='horizontal')low=Math.min(low,pose.transform.position.y);
+    let v=planeVis.get(pl);
+    if(!v){v={mesh:new THREE.Mesh(planeGeo(pl.polygon),pl.orientation==='vertical'?matV:matH),t:pl.lastChangedTime};
+      v.mesh.matrixAutoUpdate=false;v.mesh.frustumCulled=false;v.mesh.renderOrder=1;scene.add(v.mesh);planeVis.set(pl,v);}
+    else if(v.t!==pl.lastChangedTime){v.mesh.geometry.dispose();v.mesh.geometry=planeGeo(pl.polygon);v.t=pl.lastChangedTime;}
+    v.mesh.matrix.fromArray(pose.transform.matrix);v.mesh.matrixWorldNeedsUpdate=true;v.mesh.visible=showPlanes;
+    // once the play area is locked, freeze each new plane as a collider (never moved, so no jitter)
+    if(mode==='paint'&&!planeCol.has(pl))addPlaneBody(pl,pose);});
+  planeCount=n;lowestY=low;
+  if(mode==='place')hint.textContent=n?`${n} surface${n>1?'s':''} found. Aim at a table or floor and tap to place the paper`:'Move your phone slowly to scan surfaces...';}
+function clearPlaneBodies(){planeCol.forEach(b=>world.removeBody(b));planeCol.clear();}
+function clearPlaneVis(){planeVis.forEach(v=>{scene.remove(v.mesh);v.mesh.geometry.dispose();});planeVis.clear();}
+const cursor=new THREE.Mesh(new THREE.SphereGeometry(1,16,12),new THREE.MeshBasicMaterial({color:0x111111,transparent:true,opacity:.8}));cursor.visible=false;scene.add(cursor);
+
+// ink materials
+const inkMat=new THREE.ShaderMaterial({transparent:true,side:THREE.DoubleSide,
+vertexShader:`attribute vec3 aTan;attribute float aSide,aU,wid,aS;varying vec2 vUv;varying float vS,vW;
+void main(){vec3 wp=(modelMatrix*vec4(position,1.)).xyz;vec3 wt=normalize(mat3(modelMatrix)*aTan);
+vec3 vd=normalize(cameraPosition-wp);vec3 o=cross(wt,vd);float l=length(o);o=l>.001?o/l:vec3(0.,1.,0.);
+wp+=o*aSide*wid;vUv=vec2(aU,aSide);vS=aS;vW=wid;gl_Position=projectionMatrix*viewMatrix*vec4(wp,1.);}`,
+fragmentShader:`varying vec2 vUv;varying float vS,vW;
+float h(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+float n(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(h(i),h(i+vec2(1,0)),f.x),mix(h(i+vec2(0,1)),h(i+vec2(1,1)),f.x),f.y);}
+void main(){float v=abs(vUv.y),u=vUv.x;
+float edge=v+(n(vec2(u*60.+vS,vUv.y*3.))-.5)*.35;float a=1.-smoothstep(.72,1.,edge);
+float dry=.15+.5*u+.35*(1.-smoothstep(.004,.016,vW));
+float s=n(vec2(vUv.y*14.+vS*13.,u*5.+vS));a*=1.-step(s,dry*.5*(.4+v));
+float t=smoothstep(.5,1.,edge)*.8+dry*.25*n(vec2(u*20.,vUv.y*6.+vS));
+vec3 col=mix(vec3(.03,.03,.05),vec3(.3,.31,.34),t);
+if(a<.25)discard;gl_FragColor=vec4(col,a*.96);}`});
+const tubeMat=new THREE.MeshLambertMaterial({color:0x202026,emissive:0x0c0c10,side:THREE.DoubleSide});
+let style='ribbon';
+
+const prof=(u,r)=>Math.max(r*(1-.6*Math.pow(u,1.4)),r*.3);
+function build(P,R,mode,seed){
+  const n=P.length,g=new THREE.BufferGeometry(),T=[],idx=[];
+  for(let i=0;i<n;i++)T.push(P[Math.min(i+1,n-1)].clone().sub(P[Math.max(i-1,0)]).normalize());
+  if(mode==='ribbon'){
+    const pos=new Float32Array(n*6),tan=new Float32Array(n*6),sd=new Float32Array(n*2),au=new Float32Array(n*2),wd=new Float32Array(n*2),as=new Float32Array(n*2).fill(seed);
+    for(let i=0;i<n;i++){const u=i/(n-1),w=prof(u,R[i])*1.15*(.4+.6*Math.min(1,u*25));
+      for(let s=0;s<2;s++){const k=i*2+s;P[i].toArray(pos,k*3);T[i].toArray(tan,k*3);sd[k]=s?1:-1;au[k]=u;wd[k]=w;}
+      if(i<n-1){const a=i*2;idx.push(a,a+1,a+2,a+1,a+3,a+2);}}
+    [['position',pos,3],['aTan',tan,3],['aSide',sd,1],['aU',au,1],['wid',wd,1],['aS',as,1]].forEach(([k,a,s])=>g.setAttribute(k,new THREE.BufferAttribute(a,s)));
+  }else{
+    const M=8,pos=[],nor=[];let N=new THREE.Vector3();
+    const t0=T[0],a0=Math.abs(t0.y)>.9?new THREE.Vector3(1,0,0):new THREE.Vector3(0,1,0);N.crossVectors(a0,t0).normalize();
+    for(let i=0;i<n;i++){const t=T[i];N.addScaledVector(t,-N.dot(t)).normalize();const B=new THREE.Vector3().crossVectors(t,N),r=prof(i/(n-1),R[i]);
+      for(let j=0;j<M;j++){const th=j/M*Math.PI*2,d=N.clone().multiplyScalar(Math.cos(th)).addScaledVector(B,Math.sin(th));
+        pos.push(P[i].x+d.x*r,P[i].y+d.y*r,P[i].z+d.z*r);nor.push(d.x,d.y,d.z);}
+      if(i<n-1)for(let j=0;j<M;j++){const a=i*M+j,b=i*M+(j+1)%M;idx.push(a,a+M,b,b,a+M,b+M);}}
+    const cs=n*M,ce=cs+1;pos.push(...P[0].toArray(),...P[n-1].toArray());nor.push(...T[0].clone().negate().toArray(),...T[n-1].toArray());
+    for(let j=0;j<M;j++){const j2=(j+1)%M;idx.push(cs,j2,j,ce,(n-1)*M+j,(n-1)*M+j2);}
+    g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));g.setAttribute('normal',new THREE.Float32BufferAttribute(nor,3));
+  }
+  g.setIndex(idx);return g;
+}
+const mat=()=>style==='ribbon'?inkMat:tubeMat;
+
+// closed-loop surfaces
+const fillMat=new THREE.ShaderMaterial({transparent:true,side:THREE.DoubleSide,depthWrite:false,
+vertexShader:`attribute float aE;varying float vE;varying vec3 vP;void main(){vE=aE;vP=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+fragmentShader:`varying float vE;varying vec3 vP;void main(){float a=.12+.24*pow(vE,3.);a*=.85+.15*sin((vP.x+vP.y*.5)*160.);gl_FragColor=vec4(.09,.1,.14,a);}`});
+const closed=(a,b,per,n)=>n>=10&&per>=.3&&a.distanceTo(b)<Math.min(.1,.2*per);
+function findLoop(P){const n=P.length;let per=0;for(let i=1;i<n;i++)per+=P[i].distanceTo(P[i-1]);return closed(P[0],P[n-1],per,n)?P:null;}
+function makeFill(Q0){
+  const C=[],st=Math.ceil(Q0.length/40);for(let i=0;i<Q0.length;i+=st)C.push(Q0[i]);
+  const m=C.length;if(m<6)return null;
+  const N=new THREE.Vector3(),c0=new THREE.Vector3();
+  for(let i=0;i<m;i++){const a=C[i],b=C[(i+1)%m];N.x+=(a.y-b.y)*(a.z+b.z);N.y+=(a.z-b.z)*(a.x+b.x);N.z+=(a.x-b.x)*(a.y+b.y);c0.add(a);}
+  if(N.length()<1e-5)return null;N.normalize();c0.divideScalar(m);
+  const U=new THREE.Vector3().crossVectors(Math.abs(N.y)>.9?new THREE.Vector3(1,0,0):new THREE.Vector3(0,1,0),N).normalize(),W=new THREE.Vector3().crossVectors(N,U);
+  const Q2=C.map(p=>{const d=p.clone().sub(c0);return new THREE.Vector2(d.dot(U),d.dot(W));});
+  const ang=Q2.map(q=>Math.atan2(q.y,q.x)),dA=[];let tot=0;
+  for(let i=0;i<m;i++){let d=ang[(i+1)%m]-ang[i];if(d>Math.PI)d-=2*Math.PI;if(d<-Math.PI)d+=2*Math.PI;dA.push(d);tot+=d;}
+  const sg=Math.sign(tot),star=Math.abs(tot)>5.5&&dA.every(d=>d*sg>0);
+  const V=[],I=[],E=[];
+  if(star){const R=4;V.push(c0.clone());E.push(0);
+    for(let k=1;k<=R;k++)for(let i=0;i<m;i++){V.push(c0.clone().lerp(C[i],k/R));E.push(k/R);}
+    for(let i=0;i<m;i++)I.push(0,1+i,1+(i+1)%m);
+    for(let k=1;k<R;k++)for(let i=0;i<m;i++){const a=1+(k-1)*m+i,b=1+(k-1)*m+(i+1)%m,c=a+m,d=b+m;I.push(a,c,b,b,c,d);}
+  }else{const T=THREE.ShapeUtils.triangulateShape(Q2,[]);if(!T.length)return null;
+    C.forEach(p=>{V.push(p.clone());E.push(.7);});T.forEach(t=>I.push(t[0],t[1],t[2]));}
+  let area=0;for(let i=0;i<I.length;i+=3)area+=new THREE.Vector3().crossVectors(V[I[i+1]].clone().sub(V[I[i]]),V[I[i+2]].clone().sub(V[I[i]])).length()/2;
+  return{V,I,E,area};
+}
+function fillSamples(f){
+  const tri=[];for(let i=0;i<f.I.length;i+=3)tri.push([f.V[f.I[i]],f.V[f.I[i+1]],f.V[f.I[i+2]]]);
+  let d=.03;const mm=t=>Math.max(1,Math.ceil(Math.max(t[0].distanceTo(t[1]),t[1].distanceTo(t[2]),t[2].distanceTo(t[0]))/d));
+  for(let g=0;g<14;g++){let cnt=0;tri.forEach(t=>{const m=mm(t);cnt+=(m+1)*(m+2)/2;});if(cnt<=220)break;d*=1.25;}
+  const out=[];tri.forEach(t=>{const m=mm(t);for(let i=0;i<=m;i++)for(let j=0;j<=m-i;j++)out.push(t[0].clone().addScaledVector(t[1].clone().sub(t[0]),i/m).addScaledVector(t[2].clone().sub(t[0]),j/m));});
+  return{pts:out,r:Math.max(.015,d*.6)};
+}
+
+// pieces
+const pieces=[];
+function makePiece(P,R){
+  const n=P.length,c=new THREE.Vector3();P.forEach(p=>c.add(p));c.divideScalar(n);
+  let vol=0;for(let i=1;i<n;i++)vol+=Math.PI*R[i]*R[i]*P[i].distanceTo(P[i-1]);
+  const fill=(()=>{const L=findLoop(P);return L&&makeFill(L);})(),fs=fill&&fillSamples(fill);if(fill)vol+=fill.area*.006;
+  const body=new CANNON.Body({mass:Math.max(.05,vol*S*S*S*3),position:new CANNON.Vec3(c.x*S,c.y*S,c.z*S),linearDamping:.05,angularDamping:.2});
+  body.allowSleep=true;body.sleepSpeedLimit=.6;body.sleepTimeLimit=.5;
+  const st=Math.max(1,Math.ceil(n/110));
+  for(let i=0;i<n;i+=st){const p=P[i];body.addShape(new CANNON.Sphere(R[i]*S),new CANNON.Vec3((p.x-c.x)*S,(p.y-c.y)*S,(p.z-c.z)*S));}
+  if(fs)fs.pts.forEach(p=>body.addShape(new CANNON.Sphere(fs.r*S),new CANNON.Vec3((p.x-c.x)*S,(p.y-c.y)*S,(p.z-c.z)*S)));
+  world.addBody(body);
+  const local=P.map(p=>p.clone().sub(c)),seed=Math.random()*50;
+  const mesh=new THREE.Mesh(build(local,R,style,seed),mat());mesh.frustumCulled=false;mesh.position.copy(c);scene.add(mesh);
+  if(fill){const fg=new THREE.BufferGeometry();fg.setAttribute('position',new THREE.Float32BufferAttribute(fill.V.flatMap(v=>[v.x-c.x,v.y-c.y,v.z-c.z]),3));fg.setAttribute('aE',new THREE.Float32BufferAttribute(fill.E,1));fg.setIndex(fill.I);const fm=new THREE.Mesh(fg,fillMat);fm.frustumCulled=false;fm.renderOrder=2;mesh.add(fm);}
+  pieces.push({body,mesh,local,rad:R.slice(),seed});
+}
+function removePiece(p){world.removeBody(p.body);scene.remove(p.mesh);p.mesh.children.forEach(ch=>ch.geometry.dispose());p.mesh.geometry.dispose();pieces.splice(pieces.indexOf(p),1);}
+function clearAll(){while(pieces.length)removePiece(pieces[0]);}
+
+// state
+let mode='place',tool='paint',session=null,hitSource=null,last=0;
+const tip=new THREE.Vector3();let hasTip=false;
+let drawing=false,pts=[],rad=[],sm=new THREE.Vector3(),prevSm=new THREE.Vector3(),spd=0,per=0,rcur=RMAX,live=null,pointerDown=false;
+const hint=$('hint');
+function setMode(m){mode=m;reticle.visible=false;
+  hint.textContent=m==='place'?'Aim at a table or floor, then tap to place the paper':(tool==='paint'?'Press and hold and move to paint. Close a loop to fill it':'Press and hold to erase near the brush tip');}
+function setTool(t){tool=t;$('bTool').textContent=t==='paint'?'Paint':'Erase';$('bTool').classList.toggle('on',t==='erase');setMode(mode);}
+$('bStyle').onclick=()=>{style=style==='ribbon'?'tube':'ribbon';$('bStyle').textContent=style==='ribbon'?'Ribbon':'Tube';
+  pieces.forEach(p=>{p.mesh.geometry.dispose();p.mesh.geometry=build(p.local,p.rad,style,p.seed);p.mesh.material=mat();});};
+$('bTool').onclick=()=>setTool(tool==='paint'?'erase':'paint');
+$('bClear').onclick=clearAll;
+$('bMove').onclick=()=>{clearPlaneBodies();clearAll();clearBlocks();paper.visible=false;setMode('place');};
+$('bPlanes').onclick=()=>{showPlanes=!showPlanes;$('bPlanes').textContent='Planes: '+(showPlanes?'On':'Off');};
+$('bExit').onclick=()=>session&&session.end();
+
+const pad=$('pad');
+pad.addEventListener('pointerdown',e=>{
+  e.preventDefault();
+  if(mode==='place'){if(!reticle.visible)return;
+    const p=new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
+    const gy=(lowestY<p.y-.15)?lowestY:p.y;ground.position.set(0,gy*S,0);paper.position.set(p.x,p.y+.001,p.z);paper.visible=true;makeBlocks(p.x,p.y,p.z);setMode('paint');return;}
+  pointerDown=true;
+  if(tool==='paint'&&hasTip){drawing=true;sm.copy(tip);prevSm.copy(sm);spd=0;rcur=RMAX;pts=[sm.clone()];rad=[RMAX];per=0;}
+});
+const up=()=>{pointerDown=false;if(drawing){drawing=false;
+  if(live){scene.remove(live);live.geometry.dispose();live=null;}
+  if(pts.length>=3)makePiece(pts,rad);pts=[];rad=[];}};
+pad.addEventListener('pointerup',up);pad.addEventListener('pointercancel',up);
+
+const tmpQ=new THREE.Quaternion(),tmpV=new THREE.Vector3(),cv=new CANNON.Vec3(),tp=new CANNON.Vec3();
+renderer.setAnimationLoop((t,frame)=>{
+  const dt=Math.min((t-last)/1000||.016,.05);last=t;
+  if(frame){
+    const rs=renderer.xr.getReferenceSpace(),pose=frame.getViewerPose(rs);
+    if(pose){const tr=pose.transform,o=tr.orientation;
+      tmpQ.set(o.x,o.y,o.z,o.w);tmpV.set(0,0,-1).applyQuaternion(tmpQ);
+      tip.set(tr.position.x,tr.position.y,tr.position.z).addScaledVector(tmpV,TIP);hasTip=true;}
+    updatePlanes(rs,frame);
+    if(mode==='place'&&hitSource){const h=frame.getHitTestResults(hitSource);
+      if(h.length){reticle.visible=true;reticle.matrix.fromArray(h[0].getPose(rs).transform.matrix);}else reticle.visible=false;}
+  }
+  if(mode==='paint'&&hasTip){
+    if(drawing){
+      sm.lerp(tip,.35);spd+=(sm.distanceTo(prevSm)/dt-spd)*.15;prevSm.copy(sm);
+      const k=Math.min(1,Math.max(0,(spd-.02)/.7));rcur+=((RMIN+(RMAX-RMIN)*Math.pow(1-k,1.5))-rcur)*.2;
+      if(sm.distanceTo(pts[pts.length-1])>=Math.max(.008,rcur*.35)){per+=sm.distanceTo(pts[pts.length-1]);pts.push(sm.clone());rad.push(rcur);
+        if(pts.length>=2){const g=build(pts,rad,style,7);
+          if(!live){live=new THREE.Mesh(g,mat());live.frustumCulled=false;scene.add(live);}else{live.geometry.dispose();live.geometry=g;live.material=mat();}}}
+      cursor.position.copy(sm);cursor.scale.setScalar(Math.max(.004,rcur));cursor.material.color.set(closed(pts[0],sm,per,pts.length)?0x2a9d6f:0x111111);
+    }else{
+      cursor.position.copy(tip);
+      if(tool==='erase'){cursor.scale.setScalar(ER);cursor.material.color.set(0xcc3333);}else{cursor.scale.setScalar(.006);cursor.material.color.set(0x111111);}
+    }
+    cursor.visible=true;
+    if(tool==='erase'&&pointerDown){tp.set(tip.x*S,tip.y*S,tip.z*S);
+      for(const p of pieces.slice()){const b=p.body;let hit=false;
+        for(let k=0;k<b.shapes.length&&!hit;k++){b.pointToWorldFrame(b.shapeOffsets[k],cv);if(cv.distanceTo(tp)<(b.shapes[k].radius+ER*S))hit=true;}
+        if(hit)removePiece(p);}}
+    world.step(1/180,dt,6);
+  }else cursor.visible=false;
+  for(const p of pieces){const b=p.body;p.mesh.position.set(b.position.x/S,b.position.y/S,b.position.z/S);p.mesh.quaternion.set(b.quaternion.x,b.quaternion.y,b.quaternion.z,b.quaternion.w);}
+  renderer.render(scene,camera);
+});
+
+// session
+function onEnd(){clearPlaneBodies();clearPlaneVis();lowestY=Infinity;planesSeen=false;session=null;hitSource=null;hasTip=false;$('hud').style.display='none';$('splash').style.display='flex';}
+$('go').onclick=async()=>{
+  try{
+    const s=await navigator.xr.requestSession('immersive-ar',{requiredFeatures:['hit-test'],optionalFeatures:['dom-overlay','plane-detection'],domOverlay:{root:$('ui')}});
+    session=s;s.addEventListener('end',onEnd);await renderer.xr.setSession(s);
+    $('splash').style.display='none';$('hud').style.display='block';clearAll();clearBlocks();paper.visible=false;setMode('place');
+    const vs=await s.requestReferenceSpace('viewer');hitSource=await s.requestHitTestSource({space:vs});
+    setTimeout(()=>{if(session&&!planesSeen){$('bPlanes').style.display='none';if(mode==='place')hint.textContent='Plane detection unavailable, using hit-test floor. Aim and tap to place the paper';}},1500);
+  }catch(e){$('msg').textContent='Could not start AR: '+e.message;}
+};
+if(!navigator.xr)$('msg').textContent='WebXR is not available. Use Chrome on an ARCore Android phone over HTTPS.';
+else navigator.xr.isSessionSupported('immersive-ar').then(ok=>{if(!ok)$('msg').textContent='AR is not supported on this device or browser.';});
+addEventListener('resize',()=>{renderer.setSize(innerWidth,innerHeight);});
+</script></body></html>
